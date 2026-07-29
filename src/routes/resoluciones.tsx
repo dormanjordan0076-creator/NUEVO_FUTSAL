@@ -40,15 +40,30 @@ function ResolucionesPage() {
     queryKey: ["public", "resolutions", activeId, teamIds.data?.length ?? 0],
     enabled: !!activeId && !!teamIds.data,
     queryFn: async () => {
-      const ids = teamIds.data ?? [];
-      if (ids.length === 0) return [] as any[];
-      // Traemos resoluciones vía la observación (que tiene team_id)
-      const { data } = await (supabase as any)
-        .from("match_resolutions")
-        .select("*, observation:observation_id(id, team_id, description, observation_type, team:team_id(name,logo_url))")
-        .order("created_at", { ascending: false });
-      return ((data ?? []) as any[]).filter((r) => r.observation && ids.includes(r.observation.team_id));
-    },
+
+  const { data, error } = await (supabase as any)
+    .from("match_resolutions")
+    .select(`
+      *,
+      match:match_id(
+        id,
+        home_team_id,
+        away_team_id
+      )
+    `)
+    .order("created_at", { ascending: false });
+
+
+  console.log("RESOLUCIONES CARGADAS:", data);
+  console.log("ERROR RESOLUCIONES:", error);
+
+
+  if(error) throw error;
+
+
+  return data ?? [];
+
+},
   });
 
   if (!activeId) {
@@ -78,8 +93,10 @@ function ResolucionesPage() {
               <div className="flex flex-wrap items-start justify-between gap-2">
                 <div className="min-w-0">
                   <div className="flex flex-wrap items-center gap-2">
-                    <h2 className="text-base font-bold">{r.title}</h2>
-                    {r.observation?.team?.name && <Badge variant="outline">{r.observation.team.name}</Badge>}
+                    <h2 className="text-base font-bold">{r.description || r.file_name}</h2>
+                    <Badge variant="outline">
+  Resolución oficial
+</Badge>
                     {r.observation?.observation_type && <Badge variant="secondary" className="capitalize">{r.observation.observation_type}</Badge>}
                   </div>
                   <div className="mt-1 text-xs text-muted-foreground">
@@ -89,7 +106,11 @@ function ResolucionesPage() {
                 </div>
                 {r.pdf_url && (
                   <div className="flex gap-2">
-                    <Button size="sm" variant="outline" className="gap-1.5" onClick={() => setPreview({ url: r.pdf_url, title: r.title })}>
+                    <Button size="sm" variant="outline" className="gap-1.5" onClick={() => setPreview({ 
+ url: r.pdf_url, 
+ title: r.file_name ?? "Resolución oficial"
+})
+}>
                       <Eye className="h-4 w-4" /> Ver
                     </Button>
                     <a href={r.pdf_url} target="_blank" rel="noreferrer">
@@ -107,13 +128,38 @@ function ResolucionesPage() {
       </div>
 
       <Dialog open={!!preview} onOpenChange={(o) => { if (!o) setPreview(null); }}>
-        <DialogContent className="max-w-5xl">
-          <DialogHeader><DialogTitle>{preview?.title}</DialogTitle></DialogHeader>
-          {preview && (
-            <iframe src={preview.url} title={preview.title} className="h-[75vh] w-full rounded-lg border border-border" />
-          )}
-        </DialogContent>
-      </Dialog>
+  <DialogContent className="max-w-5xl">
+
+    <DialogHeader>
+      <DialogTitle>{preview?.title}</DialogTitle>
+    </DialogHeader>
+
+    {preview && (
+      <>
+        <div className="flex justify-end mb-3">
+          <a
+            href={preview.url}
+            download
+            target="_blank"
+            rel="noreferrer"
+          >
+            <Button className="gap-2">
+              <Download className="h-4 w-4" />
+              Descargar PDF
+            </Button>
+          </a>
+        </div>
+
+        <iframe
+          src={preview.url}
+          title={preview.title}
+          className="h-[75vh] w-full rounded-lg border border-border"
+        />
+      </>
+    )}
+
+  </DialogContent>
+</Dialog>
     </div>
   );
 }

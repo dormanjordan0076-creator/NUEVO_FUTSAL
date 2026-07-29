@@ -42,11 +42,19 @@ function CampeonatosPage() {
     queryKey: ["user", "championships", user?.id],
     enabled: !!user,
     queryFn: async () => {
-      const { data, error } = await (supabase as any).rpc("user_championships");
-      if (error) throw error;
-      return (data ?? []) as UserChamp[];
-    },
+      if (!user) return [];
+
+const { data, error } = await (supabase as any)
+  .rpc("user_championships", {
+    _uid: user.id,
   });
+      if (error) throw error;
+
+    return (data ?? []).map((id: string) => ({
+      championship_id: id,
+    })) as UserChamp[];
+  },
+});
 
   if (authLoading || champLoading) {
     return <div className="p-10 text-center text-sm text-muted-foreground">Cargando…</div>;

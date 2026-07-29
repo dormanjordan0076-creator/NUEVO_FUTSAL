@@ -7,8 +7,16 @@ async function assertAdmin(ctx: { supabase: any; userId: string }) {
     .from("user_roles")
     .select("role")
     .eq("user_id", ctx.userId);
+
   if (error) throw new Error(error.message);
-  if (!(data ?? []).some((r: any) => r.role === "admin")) {
+
+  if (
+    !(data ?? []).some(
+      (r: any) =>
+        r.role === "admin" ||
+        r.role === "super_admin"
+    )
+  ) {
     throw new Error("Solo administradores");
   }
 }
@@ -18,30 +26,60 @@ export const listUsers = createServerFn({ method: "GET" })
   .middleware([requireSupabaseAuth])
   .handler(async ({ context }) => {
     await assertAdmin(context);
+
     const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
 
     const [{ data: profiles }, { data: roles }, { data: teams }] = await Promise.all([
-      supabaseAdmin.from("profiles").select("id, email, full_name, phone, active, created_at").order("created_at", { ascending: false }),
-      supabaseAdmin.from("user_roles").select("user_id, role"),
-      supabaseAdmin.from("teams").select("id, name, delegate_user_id"),
+      supabaseAdmin
+        .from("profiles")
+        .select("id, email, full_name, phone, active, created_at")
+        .order("created_at", { ascending: false }),
+
+      supabaseAdmin
+        .from("user_roles")
+        .select("user_id, role"),
+
+      supabaseAdmin
+        .from("teams")
+        .select("id, name, delegate_user_id"),
     ]);
 
+
     const rolesByUser = new Map<string, string[]>();
+
     (roles ?? []).forEach((r: any) => {
       const list = rolesByUser.get(r.user_id) ?? [];
       list.push(r.role);
       rolesByUser.set(r.user_id, list);
     });
+
+
     const teamByDelegate = new Map<string, { id: string; name: string }>();
+
     (teams ?? []).forEach((t: any) => {
-      if (t.delegate_user_id) teamByDelegate.set(t.delegate_user_id, { id: t.id, name: t.name });
+      if (t.delegate_user_id) {
+        teamByDelegate.set(
+          t.delegate_user_id,
+          {
+            id: t.id,
+            name: t.name
+          }
+        );
+      }
     });
+
+
+    console.log("PERFILES:", profiles);
+    console.log("ROLES:", roles);
+    console.log("TEAMS:", teams);
+
 
     return (profiles ?? []).map((p: any) => ({
       ...p,
       roles: rolesByUser.get(p.id) ?? [],
       team: teamByDelegate.get(p.id) ?? null,
     }));
+
   });
 
 /** Crea un usuario (email + password) y le asigna un rol. Solo admin. */
@@ -58,7 +96,7 @@ export const createUser = createServerFn({ method: "POST" })
     }).parse(d),
   )
   .handler(async ({ context, data }) => {
-    await assertAdmin(context);
+     await assertAdmin(context);
     const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
 
     const { data: created, error: cErr } = await supabaseAdmin.auth.admin.createUser({
@@ -101,7 +139,7 @@ export const updateUser = createServerFn({ method: "POST" })
     }).parse(d),
   )
   .handler(async ({ context, data }) => {
-    await assertAdmin(context);
+     await assertAdmin(context);
     const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
     const uid = data.user_id;
 
@@ -142,7 +180,7 @@ export const deleteUser = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .inputValidator((d) => z.object({ user_id: z.string().uuid() }).parse(d))
   .handler(async ({ context, data }) => {
-    await assertAdmin(context);
+     await assertAdmin(context);
     if (data.user_id === context.userId) throw new Error("No podés eliminar tu propio usuario");
     const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
     await supabaseAdmin.from("teams").update({ delegate_user_id: null }).eq("delegate_user_id", data.user_id);

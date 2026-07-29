@@ -84,8 +84,8 @@ function PlanillaPage() {
   if (!match.data) return <div className="p-10 text-center">Partido no encontrado</div>;
   const home = teams.data?.find((t) => t.id === homeId);
   const away = teams.data?.find((t) => t.id === awayId);
-  const homePlayers = players.data?.filter((p) => p.team_id === homeId) ?? [];
-  const awayPlayers = players.data?.filter((p) => p.team_id === awayId) ?? [];
+  const homePlayers = players.data?.filter((p) => p.id === homeId) ?? [];
+  const awayPlayers = players.data?.filter((p) => p.id === awayId) ?? [];
 
   return (
     <div className="planilla-wrap mx-auto max-w-[215.9mm] px-3 py-4">

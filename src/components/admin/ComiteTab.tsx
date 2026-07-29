@@ -12,7 +12,7 @@ import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
 import { format } from "date-fns";
 import { es } from "date-fns/locale";
-import { Gavel, FileUp, MessageSquare, ExternalLink } from "lucide-react";
+import { Gavel, FileUp, MessageSquare, ExternalLink, Pencil } from "lucide-react";
 import { uploadFile } from "@/lib/storage";
 import { useActiveChampionship } from "@/lib/championship";
 
@@ -37,16 +37,54 @@ export function ComiteTab() {
     queryKey: ["admin", "observations", activeId, filter, teamIds.data?.length ?? 0],
     enabled: !!activeId && !!teamIds.data,
     queryFn: async () => {
-      const ids = teamIds.data ?? [];
-      if (ids.length === 0) return [] as any[];
-      let q: any = (supabase as any).from("match_observations")
-        .select("*, team:team_id(id,name,logo_url,primary_color), match:match_id(id,match_date,home_team_id,away_team_id,home:home_team_id(name),away:away_team_id(name)), match_resolutions(*)")
-        .in("team_id", ids)
-        .order("created_at", { ascending: false });
-      if (filter !== "all") q = q.eq("status", filter);
-      const { data } = await q;
-      return (data ?? []) as any[];
-    },
+
+  const { data: auth } = await supabase.auth.getUser();
+
+  console.log("================================");
+  console.log("USUARIO LOGUEADO");
+  console.log(auth.user?.id);
+  console.log(auth.user?.email);
+  console.log("================================");
+
+  const { data: roles, error: rolesError } = await supabase
+    .from("user_roles")
+    .select("*")
+    .eq("user_id", auth.user!.id);
+
+  console.log("ROLES DEL USUARIO:", JSON.stringify(roles, null, 2));
+  console.table(roles);
+  console.log("ERROR ROLES:", rolesError);
+
+  console.log("BUSCANDO OBSERVACIONES PARA CAMPEONATO:", activeId);
+
+  const { data, error } = await (supabase as any)
+    .from("match_observations")
+    .select(`
+      *,
+      team:team_id(
+        id,
+        name,
+        logo_url,
+        primary_color
+      ),
+      match:match_id(
+        id,
+        match_date,
+        home_team_id,
+        away_team_id,
+        home:home_team_id(name),
+        away:away_team_id(name)
+      )
+    `)
+    .order("created_at", { ascending: false });
+
+  console.log("TODAS LAS OBSERVACIONES:", data);
+  console.log("ERROR:", error);
+
+  if (error) throw error;
+
+  return data ?? [];
+},
   });
 
   const [resolveFor, setResolveFor] = useState<any>(null);
@@ -129,7 +167,7 @@ export function ComiteTab() {
                   <div className="text-xs font-bold uppercase tracking-widest text-success">Resolución publicada</div>
                   {o.match_resolutions.map((r: any) => (
                     <div key={r.id} className="mt-1 text-sm">
-                      <div className="font-semibold">{r.title}</div>
+                      <div className="font-semibold">{r.file_name}</div>
                       {r.pdf_url && (
                         <a href={r.pdf_url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-xs font-semibold text-primary hover:underline">
                           Ver PDF <ExternalLink className="h-3 w-3" />
@@ -152,9 +190,81 @@ export function ComiteTab() {
                     {OBS_STATUS.map((s) => <SelectItem key={s} value={s} className="capitalize">{s.replace("_", " ")}</SelectItem>)}
                   </SelectContent>
                 </Select>
-                <Button size="sm" className="gap-1.5" onClick={() => setResolveFor(o)}>
-                  <FileUp className="h-4 w-4" /> {o.match_resolutions?.length ? "Reemplazar resolución" : "Subir resolución"}
-                </Button>
+                {o.status !== "resuelta" && (
+  <Button 
+    size="sm" 
+    className="gap-1.5" 
+    onClick={() => setResolveFor(o)}
+  >
+    <FileUp className="h-4 w-4" /> Subir resolución
+  </Button>
+)}
+
+{o.status === "resuelta" && (
+  <Button
+    size="sm"
+    variant="outline"
+    className="gap-1.5"
+    onClick={() => setResolveFor(o)}
+  >
+    <Pencil className="h-4 w-4" /> Editar resolución
+  </Button>
+)}
+                <Button
+  size="sm"
+  variant="destructive"
+  onClick={async () => {
+    if (
+      !confirm(
+        "¿Eliminar esta observación?\n\nTambién se eliminarán:\n\n- La resolución\n- El PDF\n- Las sanciones asociadas\n\nEsta acción no se puede deshacer."
+      )
+    )
+      return;
+
+    try {
+
+      await (supabase as any)
+  .from("player_sanctions")
+  .delete()
+  .eq("observation_id", o.id);
+  
+  const { data: resolution } = await (supabase as any)
+  .from("match_resolutions")
+  .select("*")
+  .eq("observation_id", o.id)
+  .maybeSingle();
+
+  if (resolution?.file_path) {
+
+  await supabase.storage
+    .from("resoluciones")
+    .remove([resolution.file_path]);
+
+}
+
+await (supabase as any)
+  .from("match_resolutions")
+  .delete()
+  .eq("observation_id", o.id);
+
+  await (supabase as any)
+  .from("match_observations")
+  .delete()
+  .eq("id", o.id);
+
+  toast.success("Observación eliminada");
+
+qc.invalidateQueries({
+  queryKey: ["admin", "observations"],
+});
+
+    } catch (e: any) {
+      toast.error(e.message);
+    }
+  }}
+>
+  Eliminar observación
+</Button>
               </div>
             </div>
           ))}
@@ -241,22 +351,53 @@ function ResolutionDialog({ obs, onClose, onSaved }: { obs: any; onClose: () => 
             setSaving(true);
             try {
               let pdf_url: string | null = null;
-              if (file) {
-                const path = await uploadFile("resoluciones", file, `${obs.match_id}/`);
-                const { data } = supabase.storage.from("resoluciones").getPublicUrl(path);
-                pdf_url = data.publicUrl;
-              }
+let file_path: string | null = null;
+let path: string | null = null;
+
+if (file) {
+  const path = await uploadFile("resoluciones", file, `${obs.match_id}/`);
+  file_path = path;
+
+  const { data } = supabase.storage
+    .from("resoluciones")
+    .getPublicUrl(path);
+
+  pdf_url = data.publicUrl;
+}
               const { data: userData } = await supabase.auth.getUser();
               const uid = userData.user?.id ?? null;
-              const { error } = await (supabase as any).from("match_resolutions").insert({
-                observation_id: obs.id,
-                match_id: obs.match_id,
-                title: title.trim(),
-                description: desc.trim() || null,
-                pdf_url,
-                created_by: uid,
-              });
-              if (error) throw error;
+              const { error } = await (supabase as any)
+.from("match_resolutions")
+.insert({
+  observation_id: obs.id,
+  match_id: obs.match_id,
+
+  file_name: file?.name ?? "Resolución del comité",
+
+  file_path: file_path,
+
+  file_url: pdf_url,
+
+  pdf_url: pdf_url,
+
+  description: desc.trim() || null,
+
+  created_by: uid,
+  uploaded_by: uid,
+});
+
+if (error) throw error;
+
+
+// MARCAR OBSERVACIÓN COMO RESUELTA
+const { error: obsError } = await (supabase as any)
+  .from("match_observations")
+  .update({
+    status: "resuelta"
+  })
+  .eq("id", obs.id);
+
+if (obsError) throw obsError;
 
               // Sanción opcional
               const nMatches = Number(sancMatches);

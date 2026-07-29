@@ -23,6 +23,8 @@ import { ComiteTab } from "@/components/admin/ComiteTab";
 import { MotorDeportivoTab } from "@/components/admin/MotorDeportivoTab";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
+import { ObservacionDialog } from "@/components/ObservacionDialog";
+import { MessageSquare } from "lucide-react";
 
 export const Route = createFileRoute("/_authenticated/admin")({
   head: () => ({ meta: [{ title: "Administración · Integración Futsal" }] }),
@@ -567,21 +569,7 @@ function CategoriesTab() {
     enabled: !!champ.activeId,
     queryFn: async () => (await (supabase as any).from("groups").select("*").eq("championship_id", champ.activeId!).order("display_order")).data ?? [],
   });
-  const teams = useQuery({
-  queryKey: ["admin", "teams", activeId, categoryId],
-  enabled: !!activeId && !!categoryId,
-  queryFn: async () => {
-    const { data } = await supabase
-      .from("teams")
-      .select("*")
-      .eq("championship_id", activeId!)
-      .eq("category_id", categoryId)
-      .order("name");
-
-    return data ?? [];
-  },
-});
-
+  
   const emptyForm = { name: "", display_order: 0, sort_order: 0, description: "", age_condition: "", status: "active", use_groups: false, groups_count: 0, group_names: [] as string[] };
   const [f, setF] = useState<any>(emptyForm);
   const [editId, setEditId] = useState<string | null>(null);
@@ -605,7 +593,7 @@ function CategoriesTab() {
       const existingGroups = (allGroups.data ?? []).filter((g: any) => g.category_id === editId);
       const desiredNames = new Set((f.group_names ?? []).map((n: string) => n.trim()).filter(Boolean));
       const groupsToRemove = existingGroups.filter((g: any) => !desiredNames.has(g.name));
-      const parts = teams.data ?? [];
+      const parts: any[] = [];
       const blockedGroup = groupsToRemove.find((g: any) => parts.some((p: any) => p.group_id === g.id));
       if (blockedGroup) {
         return toast.error(`No se puede eliminar el grupo "${blockedGroup.name}" porque tiene equipos asignados.`);
@@ -614,7 +602,7 @@ function CategoriesTab() {
     // Si se pasa de "usa grupos" a "sin grupos", verificar que ningún equipo esté asignado a un grupo existente
     if (editId && !f.use_groups) {
       const existingGroups = (allGroups.data ?? []).filter((g: any) => g.category_id === editId);
-      const parts = teams.data ?? [];
+      const parts: any[] = [];
       const stillAssigned = existingGroups.some((g: any) => parts.some((p: any) => p.group_id === g.id));
       if (stillAssigned) {
         return toast.error("Hay equipos asignados a grupos de esta categoría. Reasigná antes de desactivar grupos.");
@@ -850,7 +838,7 @@ function CategoryDrawFlow({ category, championshipId }: { category: any; champio
   // Aislamiento estricto: sólo equipos del campeonato+categoría activa.
   const teams = useQuery({
     queryKey: ["admin", "teams", championshipId, category.id],
-    queryFn: async () => (await supabase.from("teams").select("id,name,logo_url,primary_color,category_id").eq("championship_id", championshipId).eq("category_id", category.id).order("name")).data ?? [],
+    queryFn: async () => (await supabase.from("teams").select("id,name,logo_url,primary_color,category_id,group_name").eq("championship_id", championshipId).eq("category_id", category.id).order("name")).data ?? [],
   });
 
   const phases = useQuery({
@@ -865,6 +853,7 @@ function CategoryDrawFlow({ category, championshipId }: { category: any; champio
 
   const useGroups = !!category.use_groups;
   const parts = teams.data ?? [];
+  console.log(parts);
   const grps = groups.data ?? [];
   const teamById = new Map((teams.data ?? []).map((t: any) => [t.id, t]));
 
@@ -942,13 +931,17 @@ function DrawSection({
   const [assignments, setAssignments] = useState<Record<string, string>>({}); // participation.id -> group_id
 
   function openDialog() {
-    // Precargar asignaciones actuales
-    const initial: Record<string, string> = {};
-    for (const p of participations) initial[p.id] = p.group_id ?? "";
-    setAssignments(initial);
-    setMode("auto");
-    setDlgOpen(true);
+  const initial: Record<string, string> = {};
+
+  for (const p of participations) {
+    const grupo = groups.find((g: any) => g.name === p.group_name);
+    initial[p.id] = grupo?.id ?? "";
   }
+
+  setAssignments(initial);
+  setMode("auto");
+  setDlgOpen(true);
+}
 
   function autoDistribute() {
     if (!groups.length) return toast.error("La categoría no tiene grupos configurados");
@@ -964,39 +957,62 @@ function DrawSection({
 
   async function confirmDraw() {
     // Validaciones
-    const missing = participations.filter((p) => !assignments[p.id]);
-    if (missing.length) return toast.error(`Hay ${missing.length} equipo(s) sin grupo asignado.`);
-    const usedGroupIds = new Set(Object.values(assignments).filter(Boolean));
-    const empty = groups.filter((g) => !usedGroupIds.has(g.id));
-    if (empty.length) return toast.error(`El/los grupo(s) ${empty.map((g) => g.name).join(", ")} quedarían vacíos.`);
+    const missing = participations.filter((t:any)=>!assignments[t.id]);
+    if(missing.length){toast.error(`Hay ${missing.length} equipos sin grupo.`);return;}
+    const updates = participations.map((team: any) => {
+  const group = groups.find((g: any) => g.id === assignments[team.id]);
 
-    // Actualizar en paralelo
-    const updates = participations.map((p) =>
-      (supabase as any).from("team_participations").update({ group_id: assignments[p.id] }).eq("id", p.id),
-    );
-    const results = await Promise.all(updates);
-    const err = results.find((r: any) => r.error);
-    if (err) return toast.error(err.error.message);
-    toast.success("Sorteo confirmado");
-    setDlgOpen(false);
-    onChanged();
+  return supabase
+    .from("teams")
+    .update({
+      group_name: group?.name ?? null
+    })
+    .eq("id", team.id);
+});
+
+  const results=await Promise.all(updates);
+
+  const error=results.find((r:any)=>r.error);
+
+  if(error){
+      toast.error(error?.error?.message ?? "Error");
+      return;
   }
+
+  toast.success("Distribución de grupos actualizada");
+
+  setDlgOpen(false);
+
+  onChanged();
+
+}
 
   const canDraw = participations.length > 0 && groups.length > 0;
 
   return (
     <Card><CardContent className="p-5 space-y-4">
       <div className="flex flex-wrap items-center gap-2">
-        <div>
-          <h2 className="text-sm font-black uppercase tracking-widest">Sorteo</h2>
-          <p className="text-xs text-muted-foreground">
-            {groups.length} grupo(s) · {participations.length} equipo(s) inscrito(s)
-          </p>
-        </div>
-        <Button size="sm" className="ml-auto gap-1.5" disabled={!canDraw} onClick={openDialog}>
-          <Shuffle className="h-4 w-4" /> Realizar sorteo
-        </Button>
-      </div>
+  <div>
+    <h2 className="text-sm font-black uppercase tracking-widest">
+      Grupos
+    </h2>
+
+    <p className="text-xs text-muted-foreground">
+      {groups.length} grupo(s) · {participations.length} equipo(s)
+    </p>
+  </div>
+
+  <Button
+    size="sm"
+    variant="outline"
+    className="ml-auto gap-1.5"
+    disabled={!canDraw}
+    onClick={openDialog}
+  >
+    <Shuffle className="h-4 w-4" />
+    Redistribuir equipos
+  </Button>
+</div>
 
       {!participations.length && (
         <div className="rounded border border-dashed p-4 text-center text-xs text-muted-foreground">
@@ -1006,13 +1022,15 @@ function DrawSection({
 
       <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-3">
         {groups.map((g) => {
-          const teamsInGroup = participations.filter((p) => p.group_id === g.id);
+          const teamsInGroup = participations.filter(
+  (p: any) => p.group_name === g.name
+);
           return (
             <div key={g.id} className="rounded-lg border border-border bg-card/50 p-3">
               <div className="mb-2 text-xs font-black uppercase tracking-widest text-primary">Grupo {g.name} ({teamsInGroup.length})</div>
               <div className="space-y-1">
                 {teamsInGroup.map((p) => {
-                  const t: any = teamById.get(p.team_id);
+                  const t: any = teamById.get(p.id);
                   return (
                     <div key={p.id} className="flex items-center gap-2 rounded border border-border/50 bg-background/50 px-2 py-1 text-xs">
                       {t && <TeamBadge name={t.name} logoPath={t.logo_url} color={t.primary_color} size={20} />}
@@ -1026,14 +1044,16 @@ function DrawSection({
           );
         })}
         {(() => {
-          const sinGrupo = participations.filter((p) => !p.group_id);
+          const sinGrupo = participations.filter(
+  (p: any) => !p.group_name
+);
           if (!sinGrupo.length) return null;
           return (
             <div className="rounded-lg border border-dashed border-amber-500/40 bg-amber-500/5 p-3">
               <div className="mb-2 text-xs font-black uppercase tracking-widest text-amber-600">Sin grupo ({sinGrupo.length})</div>
               <div className="space-y-1">
                 {sinGrupo.map((p) => {
-                  const t: any = teamById.get(p.team_id);
+                  const t: any = teamById.get(p.id);
                   return <div key={p.id} className="truncate text-xs font-semibold">{t?.name ?? "—"}</div>;
                 })}
               </div>
@@ -1044,14 +1064,14 @@ function DrawSection({
 
       <Dialog open={dlgOpen} onOpenChange={setDlgOpen}>
         <DialogContent className="max-w-2xl">
-          <DialogHeader><DialogTitle>Sorteo · {category.name}</DialogTitle></DialogHeader>
+          <DialogHeader><DialogTitle>Redistribuir equipos · {category.name}</DialogTitle></DialogHeader>
           <div className="space-y-4">
             <div className="flex gap-2">
               <Button size="sm" variant={mode === "auto" ? "default" : "outline"} onClick={() => setMode("auto")} className="gap-1.5">
-                <Shuffle className="h-3.5 w-3.5" /> Sorteo automático
+                <Shuffle className="h-3.5 w-3.5" /> Redistribución automática
               </Button>
               <Button size="sm" variant={mode === "manual" ? "default" : "outline"} onClick={() => setMode("manual")} className="gap-1.5">
-                <Pencil className="h-3.5 w-3.5" /> Asignación manual
+                <Pencil className="h-3.5 w-3.5" /> Reasignación manual
               </Button>
               {mode === "auto" && (
                 <Button size="sm" variant="secondary" className="ml-auto" onClick={autoDistribute}>Redistribuir</Button>
@@ -1060,14 +1080,14 @@ function DrawSection({
 
             {mode === "auto" && (
               <p className="text-xs text-muted-foreground">
-                Distribuye los {participations.length} equipos entre {groups.length} grupo(s) en forma equilibrada.
-                Podés ajustar manualmente antes de confirmar.
+                Redistribuye automáticamente los equipos entre los grupos.
+También podés mover cualquier equipo manualmente antes de guardar los cambios.
               </p>
             )}
 
             <div className="max-h-[50vh] space-y-1 overflow-y-auto rounded border border-border p-2">
               {participations.map((p) => {
-                const t: any = teamById.get(p.team_id);
+                const t: any = teamById.get(p.id);
                 return (
                   <div key={p.id} className="flex items-center gap-2 rounded border border-border/50 bg-card/50 px-2 py-1.5 text-sm">
                     <span className="flex-1 truncate font-semibold">{t?.name ?? "—"}</span>
@@ -1084,7 +1104,7 @@ function DrawSection({
           </div>
           <DialogFooter>
             <Button variant="ghost" onClick={() => setDlgOpen(false)}>Cancelar</Button>
-            <Button onClick={confirmDraw}>Confirmar sorteo</Button>
+            <Button onClick={confirmDraw}>Guardar distribución</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -1102,7 +1122,7 @@ function FixtureSection({
   const [format, setFormat] = useState<"round_robin" | "ida_vuelta">("round_robin");
   const [busy, setBusy] = useState(false);
   const [manualPhase, setManualPhase] = useState<any | null>(null);
-  const [manualForm, setManualForm] = useState<{ home: string; away: string; when: string; venue: string; group_id: string }>({ home: "", away: "", when: "", venue: "", group_id: "" });
+  const [manualForm, setManualForm] = useState<{ home: string; away: string; when: string; venue: string; group_name: string }>({ home: "", away: "", when: "", venue: "", group_name: "" });
 
   const matchesByPhase = new Map<string, any[]>();
   for (const m of matches) {
@@ -1144,10 +1164,16 @@ function FixtureSection({
 
       if (phase.kind === "grupos") {
         if (!category.use_groups) { toast.error("La categoría no usa grupos"); return; }
-        const bad = participations.filter((p) => !p.group_id);
-        if (bad.length) { toast.error(`Hay ${bad.length} equipo(s) sin grupo. Completá el sorteo.`); return; }
+        const bad = participations.filter((p: any) => !p.group_name);
+
+if (bad.length) {
+  toast.error(`Hay ${bad.length} equipo(s) sin grupo. Completá el sorteo.`);
+  return;
+}
         for (const g of groups) {
-          const teamIds = participations.filter((p) => p.group_id === g.id).map((p) => p.team_id);
+          const teamIds = participations
+  .filter((p: any) => p.group_name === g.name)
+  .map((p: any) => p.id);
           if (teamIds.length < 2) continue;
           const pairings = roundRobin(teamIds, doubleRound);
           for (const p of pairings) {
@@ -1165,10 +1191,15 @@ function FixtureSection({
         }
       } else if (phase.kind === "liga" || phase.kind === "ida_vuelta") {
         // Equipos de esta fase: phase_participants si existen, si no todos los inscritos en la categoría
-        const { data: pp } = await (supabase as any).from("phase_participants").select("team_id").eq("phase_id", phase.id);
-        const teamIds = (pp && pp.length > 0)
-          ? pp.map((x: any) => x.team_id)
-          : participations.map((p) => p.team_id);
+        const { data: pp } = await (supabase as any)
+  .from("phase_participants")
+  .select("team_id")
+  .eq("phase_id", phase.id);
+
+const teamIds =
+  pp && pp.length > 0
+    ? pp.map((x: any) => x.team_id)
+    : participations.map((p: any) => p.id);
         if (teamIds.length < 2) { toast.error("Se necesitan al menos 2 equipos"); return; }
         const pairings = roundRobin(teamIds, doubleRound || phase.kind === "ida_vuelta");
         for (const p of pairings) {
@@ -1241,7 +1272,7 @@ function FixtureSection({
                     {ms.length ? "Regenerar fixture" : "Generar fixture"}
                   </Button>
                 )}
-                <Button size="sm" variant="outline" disabled={!canGenerate} onClick={() => { setManualPhase(ph); setManualForm({ home: "", away: "", when: "", venue: "", group_id: "" }); }} className="gap-1.5">
+                <Button size="sm" variant="outline" disabled={!canGenerate} onClick={() => { setManualPhase(ph); setManualForm({ home: "", away: "", when: "", venue: "", group_name: "" }); }} className="gap-1.5">
                   + Cruce manual
                 </Button>
               </div>
@@ -1257,7 +1288,7 @@ function FixtureSection({
             const ms = matchesByPhase.get(openPhase.id) ?? [];
             const played = ms.filter((m) => m.status === "finalizado" || m.home_score !== null || m.away_score !== null).length;
             const teamCount = openPhase.kind === "grupos"
-              ? participations.filter((p) => !!p.group_id).length
+              ? participations.filter((p) => !!p.group_name).length
               : participations.length;
             return (
               <div className="space-y-3 text-sm">
@@ -1309,7 +1340,7 @@ function FixtureSection({
         <DialogContent className="max-w-md">
           <DialogHeader><DialogTitle>Cruce manual · {manualPhase?.name}</DialogTitle></DialogHeader>
           {manualPhase && (() => {
-            const partIds = new Set(participations.map((p) => p.team_id));
+            const partIds = new Set(participations.map((p)=>p.id));
             const catTeams = [...teamById.values()].filter((t: any) => partIds.has(t.id));
             const homeOptions = catTeams.filter((t: any) => t.id !== manualForm.away);
             const awayOptions = catTeams.filter((t: any) => t.id !== manualForm.home);
@@ -1332,7 +1363,7 @@ function FixtureSection({
                 {manualPhase.kind === "grupos" && groups.length > 0 && (
                   <div>
                     <Label className="text-xs">Grupo</Label>
-                    <Select value={manualForm.group_id || undefined} onValueChange={(v) => setManualForm({ ...manualForm, group_id: v })}>
+                    <Select value={manualForm.group_name || undefined} onValueChange={(v) => setManualForm({ ...manualForm, group_name: v })}>
                       <SelectTrigger><SelectValue placeholder="Elegí grupo" /></SelectTrigger>
                       <SelectContent>{groups.map((g: any) => <SelectItem key={g.id} value={g.id}>Grupo {g.name}</SelectItem>)}</SelectContent>
                     </Select>
@@ -1367,7 +1398,10 @@ function FixtureSection({
                   venue: manualForm.venue || null,
                   status: "pendiente",
                 };
-                if (manualForm.group_id) payload.group_id = manualForm.group_id;
+                if (manualForm.group_name) {
+  const grupo = groups.find((g: any) => g.name === manualForm.group_name);
+  payload.group_name = grupo?.name ?? null;
+}
                 const { error } = await supabase.from("matches").insert(payload);
                 setBusy(false);
                 if (error) { toast.error(error.message); return; }
@@ -1388,7 +1422,7 @@ function FixtureSection({
 function MatchesTab() {
   const qc = useQueryClient();
   const champ = useChampionship();
-  const teams = useQuery({ queryKey: ["admin", "teams", champ.activeId], enabled: !!champ.activeId, queryFn: async () => (await supabase.from("teams").select("id,name,logo_url,primary_color").eq("championship_id", champ.activeId!).order("name")).data ?? [] });
+  const teams = useQuery({ queryKey: ["admin", "teams", champ.activeId], enabled: !!champ.activeId, queryFn: async () => (await supabase.from("teams").select("id,name,logo_url,primary_color,category_id,group_name").eq("championship_id", champ.activeId!).order("name")).data ?? [] });
   const matches = useQuery({ queryKey: ["admin", "matches", champ.activeId], enabled: !!champ.activeId, queryFn: async () => (await supabase.from("matches").select("*").eq("championship_id", champ.activeId!).order("matchday").order("match_date")).data ?? [] });
   const phases = useQuery({
     queryKey: ["admin", "phases", champ.activeId],
@@ -1396,23 +1430,324 @@ function MatchesTab() {
     queryFn: async () => ((await (supabase as any).from("phases").select("id,name,kind,category_id,display_order").eq("championship_id", champ.activeId!).order("display_order")).data ?? []) as any[],
   });
   const [editId, setEditId] = useState<string | null>(null);
+  const [selectedMatches, setSelectedMatches] = useState<string[]>([]);
+  
+  const [obsMatch, setObsMatch] = useState<any>(null);
+  const [obsTeamId, setObsTeamId] = useState<string>("");
+  const [obsOpen, setObsOpen] = useState(false);
   const editing = matches.data?.find((m) => m.id === editId) ?? null;
   const phaseById = new Map((phases.data ?? []).map((p: any) => [p.id, p]));
+// ==================== FILTROS ====================
 
+const categories = useQuery({
+  queryKey: ["admin", "categories", champ.activeId],
+  enabled: !!champ.activeId,
+  queryFn: async () =>
+    (
+      await supabase
+        .from("categories")
+        .select("id,name")
+        .eq("championship_id", champ.activeId!)
+        .order("sort_order")
+    ).data ?? [],
+});
+const groups = useQuery({
+  queryKey: ["admin", "groups", champ.activeId],
+  enabled: !!champ.activeId,
+  queryFn: async () => {
+    const result = await (supabase as any)
+      .from("groups")
+      .select(`
+        id,
+        name,
+        category_id,
+        categories(
+          name
+        )
+      `)
+      .eq("championship_id", champ.activeId!);
+
+    console.log("GRUPOS CARGADOS:", result.data);
+
+    return result.data ?? [];
+  },
+});
+
+const [categoryFilter, setCategoryFilter] = useState("all");
+const [groupFilter, setGroupFilter] = useState("all");
+const [teamFilter, setTeamFilter] = useState("all");
+const [statusFilter, setStatusFilter] = useState("all");
+const [search, setSearch] = useState("");
+const [dateFrom, setDateFrom] = useState("");
+const [dateTo, setDateTo] = useState("");
+
+  async function deleteSelectedMatches() {
+  if (selectedMatches.length === 0) {
+    toast.error("No seleccionaste ningún partido.");
+    return;
+  }
+
+  if (
+    !confirm(
+      `¿Eliminar ${selectedMatches.length} partido(s)?\n\nEsta acción no se puede deshacer.`
+    )
+  ) {
+    return;
+  }
+
+  const { error } = await supabase
+    .from("matches")
+    .delete()
+    .in("id", selectedMatches);
+
+  if (error) {
+    toast.error(error.message);
+    return;
+  }
+
+  toast.success(`${selectedMatches.length} partido(s) eliminado(s).`);
+
+  setSelectedMatches([]);
+
+  qc.invalidateQueries({
+    queryKey: ["admin", "matches"],
+  });
+
+  qc.invalidateQueries({
+    queryKey: ["public", "matches"],
+  });
+}
+const filteredMatches = (matches.data ?? []).filter((m: any) => {
+
+  const home = teams.data?.find((t) => t.id === m.home_team_id);
+  const away = teams.data?.find((t) => t.id === m.away_team_id);
+  const phase = phases.data?.find((p:any)=>p.id===m.phase_id);
+  const groupName = home?.group_name ?? "";
+
+  if (
+    categoryFilter !== "all" &&
+    phase?.category_id !== categoryFilter
+  )
+    return false;
+  
+  if (
+    groupFilter !== "all" &&
+    groupName !== groupFilter
+  )
+return false;
+
+  if (
+    teamFilter !== "all" &&
+    m.home_team_id !== teamFilter &&
+    m.away_team_id !== teamFilter
+  )
+    return false;
+
+  if (
+    statusFilter !== "all" &&
+    m.status !== statusFilter
+  )
+    return false;
+
+  if (search.trim()) {
+
+    const txt = search.toLowerCase();
+
+    if (
+      !(home?.name ?? "").toLowerCase().includes(txt) &&
+      !(away?.name ?? "").toLowerCase().includes(txt)
+    )
+      return false;
+
+  }
+
+  if (dateFrom) {
+
+    if (!m.match_date) return false;
+
+    if (new Date(m.match_date) < new Date(dateFrom))
+      return false;
+
+  }
+
+  if (dateTo) {
+
+    if (!m.match_date) return false;
+
+    const end = new Date(dateTo);
+
+    end.setHours(23,59,59);
+
+    if (new Date(m.match_date) > end)
+      return false;
+
+  }
+
+  return true;
+
+});
   return (
     <Card><CardContent className="p-5">
-      <h2 className="mb-3 text-sm font-black uppercase tracking-widest">Partidos ({matches.data?.length ?? 0})</h2>
+      <h2 className="mb-3 text-sm font-black uppercase tracking-widest">
+        <div className="mb-4 grid gap-3 md:grid-cols-4 lg:grid-cols-6">
+
+<Select value={categoryFilter} onValueChange={setCategoryFilter}>
+<SelectTrigger>
+<SelectValue placeholder="Categoría"/>
+</SelectTrigger>
+<SelectContent>
+<SelectItem value="all">Categorías</SelectItem>
+
+{(categories.data ?? []).map((c:any)=>(
+<SelectItem key={c.id} value={c.id}>
+{c.name}
+</SelectItem>
+))}
+
+</SelectContent>
+</Select>
+
+<Select value={groupFilter} onValueChange={setGroupFilter}>
+  <SelectTrigger>
+    <SelectValue placeholder="Grupos"/>
+  </SelectTrigger>
+
+  <SelectContent>
+
+    <SelectItem value="all">
+  Grupos
+    </SelectItem>
+
+    {(groups.data ?? [])
+      .filter((g:any)=>
+        categoryFilter === "all"
+        ? true
+        : g.category_id === categoryFilter
+      )
+      .map((g:any)=>(
+        <SelectItem
+          key={g.id}
+          value={g.name}
+        >
+          {g.name}
+        </SelectItem>
+      ))}
+
+  </SelectContent>
+</Select>
+
+<Select value={teamFilter} onValueChange={setTeamFilter}>
+<SelectTrigger>
+<SelectValue placeholder="Equipo"/>
+</SelectTrigger>
+<SelectContent>
+
+<SelectItem value="all">Equipos</SelectItem>
+
+{(teams.data ?? []).map((t:any)=>(
+<SelectItem key={t.id} value={t.id}>
+{t.name}
+</SelectItem>
+))}
+
+</SelectContent>
+</Select>
+
+<Select value={statusFilter} onValueChange={setStatusFilter}>
+<SelectTrigger>
+<SelectValue placeholder="Estado"/>
+</SelectTrigger>
+<SelectContent>
+
+<SelectItem value="all">Estado</SelectItem>
+<SelectItem value="pendiente">Pendiente</SelectItem>
+<SelectItem value="en_curso">En juego</SelectItem>
+<SelectItem value="finalizado">Finalizado</SelectItem>
+
+</SelectContent>
+</Select>
+
+<Input
+placeholder="Buscar equipo..."
+value={search}
+onChange={(e)=>setSearch(e.target.value)}
+/>
+
+<div>
+
+<Input
+type="date"
+value={dateFrom}
+onChange={(e)=>setDateFrom(e.target.value)}
+/>
+
+</div>
+
+</div>
+        Partidos ({filteredMatches.length} de {matches.data?.length ?? 0})</h2>
+      <div className="mb-3 flex items-center gap-3">
+
+<Button
+variant="destructive"
+disabled={selectedMatches.length===0}
+onClick={deleteSelectedMatches}
+>
+🗑 Eliminar seleccionados ({selectedMatches.length})
+</Button>
+
+<Button
+variant="outline"
+onClick={()=>{
+if(selectedMatches.length===matches.data?.length){
+setSelectedMatches([]);
+}else{
+setSelectedMatches((matches.data??[]).map((m:any)=>m.id));
+}
+}}
+>
+{selectedMatches.length===matches.data?.length
+?"Deseleccionar todos"
+:"Seleccionar todos"}
+</Button>
+
+</div>
       <div className="overflow-x-auto">
         <table className="w-full text-sm">
           <thead><tr className="border-b text-[10px] font-bold uppercase tracking-widest text-muted-foreground">
             <th className="py-2 text-left">Fecha</th><th className="text-left">Fase</th><th className="text-left">Cuando</th><th className="text-center">Local</th><th></th><th className="text-center">Visitante</th><th className="text-center">Estado</th><th></th>
           </tr></thead>
-          <tbody>{(matches.data ?? []).map((m: any) => {
+          <tbody>{filteredMatches.map((m: any) => {
             const h = teams.data?.find((t) => t.id === m.home_team_id);
             const a = teams.data?.find((t) => t.id === m.away_team_id);
             const ph = m.phase_id ? phaseById.get(m.phase_id) : null;
             return (
               <tr key={m.id} className="border-b border-border/50">
+                <td>
+
+<input
+type="checkbox"
+checked={selectedMatches.includes(m.id)}
+onChange={(e)=>{
+
+if(e.target.checked){
+
+setSelectedMatches([
+...selectedMatches,
+m.id
+]);
+
+}else{
+
+setSelectedMatches(
+selectedMatches.filter(id=>id!==m.id)
+);
+
+}
+
+}}
+/>
+
+</td>
                 <td className="py-2 text-xs"><Badge variant="outline" className="uppercase">F{m.matchday ?? "?"}{m.group_name ? `·${m.group_name}` : ""}</Badge></td>
                 <td className="text-xs">{ph ? <Badge variant="secondary" className="text-[10px]">{ph.name}</Badge> : <span className="text-muted-foreground">—</span>}</td>
                 <td className="text-xs">{m.match_date ? format(new Date(m.match_date), "dd/MM HH:mm") : "—"}</td>
@@ -1421,17 +1756,67 @@ function MatchesTab() {
                 <td className="font-semibold">{a?.name ?? "—"}</td>
                 <td className="text-center"><Badge variant={m.status === "finalizado" ? "default" : "secondary"}>{m.status}</Badge></td>
                 <td className="text-right">
-                  <Link to="/planilla/$matchId" params={{ matchId: m.id }} className="mr-1 inline-flex"><Button size="icon" variant="ghost"><Printer className="h-4 w-4" /></Button></Link>
-                  <Button size="icon" variant="ghost" onClick={() => setEditId(m.id)}><Pencil className="h-4 w-4" /></Button>
-                </td>
+
+  <Link 
+    to="/planilla/$matchId" 
+    params={{ matchId: m.id }} 
+    className="mr-1 inline-flex"
+  >
+    <Button size="icon" variant="ghost">
+      <Printer className="h-4 w-4" />
+    </Button>
+  </Link>
+
+
+  <Button 
+    size="icon" 
+    variant="ghost" 
+    onClick={() => setEditId(m.id)}
+  >
+    <Pencil className="h-4 w-4" />
+  </Button>
+
+
+  <Button
+    size="icon"
+    variant="ghost"
+    title="Observación de partido"
+    onClick={() => {
+      setObsMatch({
+        ...m,
+        home: h,
+        away: a
+      });
+
+      // inicialmente selecciona el equipo local
+      setObsTeamId(m.home_team_id);
+
+      setObsOpen(true);
+    }}
+  >
+    <MessageSquare className="h-4 w-4" />
+  </Button>
+
+</td>
               </tr>
             );
           })}
-          {(matches.data ?? []).length === 0 && <tr><td colSpan={8} className="py-8 text-center text-muted-foreground">Sin partidos. Generá el fixture desde Sorteo.</td></tr>}
+          {(matches.data ?? []).length === 0 && <tr><td colSpan={9} className="py-8 text-center text-muted-foreground">Sin partidos. Generá el fixture desde Sorteo.</td></tr>}
           </tbody>
         </table>
       </div>
       <Dialog open={!!editing} onOpenChange={(o) => !o && setEditId(null)}>
+        <ObservacionDialog
+  match={obsMatch}
+  teamId={obsTeamId}
+  open={obsOpen}
+  onOpenChange={setObsOpen}
+  onSaved={()=>{
+    qc.invalidateQueries({
+      queryKey:["admin","observations"]
+    });
+  }}
+/>
         {editing && <MatchEditDialog match={editing} teams={teams.data ?? []} phases={phases.data ?? []} onSaved={() => { qc.invalidateQueries({ queryKey: ["admin", "matches"] }); qc.invalidateQueries({ queryKey: ["public", "matches"] }); setEditId(null); }} />}
       </Dialog>
     </CardContent></Card>

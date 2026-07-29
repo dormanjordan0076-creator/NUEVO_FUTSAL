@@ -117,7 +117,7 @@ export function ParticipacionesTab() {
 
       <div className="space-y-1">
         {filtered.map((p: any) => {
-          const t = teamById.get(p.team_id);
+          const t = teamById.get(p.id);
           const c = catById.get(p.category_id);
           const g = p.group_id ? groupById.get(p.group_id) : null;
           return (

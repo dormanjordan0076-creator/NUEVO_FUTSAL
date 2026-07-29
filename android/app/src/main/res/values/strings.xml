@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Integración Futsal</string>
+    <string name="title_activity_main">Integración Futsal</string>
+    <string name="package_name">app.integracion.futsal</string>
+    <string name="custom_url_scheme">app.integracion.futsal</string>
+</resources>
